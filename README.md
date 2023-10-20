@@ -9,7 +9,7 @@ The following is deprecated, use [tensorflow](https://www.tensorflow.org/install
 We recommend you to use tools like [conda](https://docs.conda.io/projects/conda/en/latest/user-guide/install/index.html) to create a virtual environment for tensorflow gpu installation.
 
 <del>
-To enable CUDA acceleration, you will need an Nvidia GPU.
+<p>To enable CUDA acceleration, you will need an Nvidia GPU.
 
 You will need the following packages to enable CUDA acceleration:
 
@@ -21,7 +21,7 @@ For OpenCl implementation:
 - OpenCl SDK for your graphics card (This is usually included in your driver installation)
 - pyopencl package from [here](https://documen.tician.de/pyopencl/misc.html#installing-from-pypi-wheels)
 
-To enable interactive matplotlib figures, install [ipympl](https://matplotlib.org/ipympl/)
+To enable interactive matplotlib figures, install [ipympl](https://matplotlib.org/ipympl/)</p>
 </del>
 
 # Change Log
