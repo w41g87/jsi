@@ -1,10 +1,11 @@
+import sys, os
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 import warnings
 import math
 import tensorflow as tf
-from tqdm.notebook import trange
+from tqdm.autonotebook import trange
 
 # helpers
 def po2(n):
@@ -38,13 +39,39 @@ def pltSect(input, x, y, sx, sy):
     heatMap_ph.set_xticklabels(np.arange(x, x + sx, int(np.ceil(sx / 20))))
     heatMap_ph.set_yticks(np.arange(0, sy, int(np.ceil(sy / 20))))
     heatMap_ph.set_yticklabels(np.arange(-y, -y - sy, int(-np.ceil(sy / 20))), rotation = 0)
-    fig.canvas.layout.width = '100%'
-    fig.canvas.layout.height = '100%'
-    fig.canvas.layout.overflow = 'scroll'
-    fig.canvas.layout.padding = '0px'
-    fig.canvas.layout.margin = '0px'
+    try:
+        get_ipython
+        fig.canvas.layout.width = '100%'
+        fig.canvas.layout.height = '100%'
+        fig.canvas.layout.overflow = 'scroll'
+        fig.canvas.layout.padding = '0px'
+        fig.canvas.layout.margin = '0px'
+    except:
+        pass
 
     return fig
+
+def data2HM(data):
+    nodes = data['nodes']
+    padding = data['padding']
+    js_p = list(zip(np.abs(data['js_s']), np.abs(data['js_i'])))
+    phis_p = list(zip(np.angle(data['js_s']), np.angle(data['js_i'])))
+    js_nh_p = list(zip(np.zeros(len(js_p)), np.zeros(len(js_p))))
+    phis_nh_p = list(zip(np.zeros(len(js_p)), np.zeros(len(js_p))))
+    g_p = data['g']
+    
+    def y_0_p(isSig, n):
+        if isSig:
+            return np.real(data['y_0_s'])
+        else:
+            return np.real(data['y_0_i'])
+    def y_ex_p(isSig, n):
+        if isSig:
+            return np.real(data['y_ex_s'])
+        else:
+            return np.real(data['y_ex_i'])
+            
+    return pltSect(jsi(nodes + padding * 2, js_p, phis_p, js_nh_p, phis_nh_p, g_p, y_0_p, y_ex_p, 0, 0, 0, 0), padding, padding, nodes, nodes)
 
 def mkMtrx (nodes, js, phis, js_nh, phis_nh, g, y_0, y_ex, w, partial={}):
     output = np.zeros([nodes * 2, nodes * 2], dtype = np.complex_)
@@ -240,7 +267,12 @@ def jsi(nodes, js, phis, js_nh, phis_nh, g, y_0, y_ex, w1, w2, w3, w4, partial={
         # print(output)
     return output
 
-def jsi_backprop(nodes, target, EPOCHS, lr=1e-4, length=5, padding=0):
+def jsi_backprop(init, EPOCHS, lr=1e-4):
+    nodes = init.get('nodes')
+    padding = init.get('padding')
+    target = init.get('target')
+    length = nodes + padding * 2 - 1
+    data = init.copy()
     nodes_t = nodes + 2 * padding
     losses = np.zeros(int(EPOCHS), dtype=np.float32)
     pi = tf.constant(np.pi, dtype=tf.complex64)
@@ -256,13 +288,13 @@ def jsi_backprop(nodes, target, EPOCHS, lr=1e-4, length=5, padding=0):
     def pos_real_constraint(x):
         return tf.cast(tf.abs(tf.math.real(x)), tf.complex64)
     j_mask = tf.constant(mask_arr, dtype=tf.int32)
-    js_s = tf.Variable(tf.ones((length, ), dtype=tf.complex64) / 10, name="coupling_s")
-    js_i = tf.Variable(tf.ones((length, ), dtype=tf.complex64) / 10, name="coupling_i")
-    g = tf.Variable(0.03, dtype=tf.complex64, name="g", constraint=pos_real_constraint)
-    y_ex_s = tf.Variable(0.1, dtype=tf.complex64, name="y_ex_s", constraint=pos_real_constraint)
-    y_ex_i = tf.Variable(0.5, dtype=tf.complex64, name="y_ex_i", constraint=pos_real_constraint)
-    y_0_s = tf.Variable(0.3, dtype=tf.complex64, name="y_0_s", constraint=pos_real_constraint)
-    y_0_i = tf.Variable(0.1, dtype=tf.complex64, name="y_0_i", constraint=pos_real_constraint)
+    js_s = tf.Variable(init.get('js_s', np.ones((length, ), dtype=np.complex64) / 10), shape=[length], name="coupling_s", dtype=tf.complex64)
+    js_i = tf.Variable(init.get('js_i', np.ones((length, ), dtype=np.complex64) / 10), shape=[length], name="coupling_i", dtype=tf.complex64)
+    g = tf.Variable(init.get('g', 0.03), dtype=tf.complex64, name="g", constraint=pos_real_constraint)
+    y_ex_s = tf.Variable(init.get('y_ex_s', 0.1), dtype=tf.complex64, name="y_ex_s", constraint=pos_real_constraint)
+    y_ex_i = tf.Variable(init.get('y_ex_i', 0.1), dtype=tf.complex64, name="y_ex_i", constraint=pos_real_constraint)
+    y_0_s = tf.Variable(init.get('y_0_s', 0.1), dtype=tf.complex64, name="y_0_s", constraint=pos_real_constraint)
+    y_0_i = tf.Variable(init.get('y_0_i', 0.1), dtype=tf.complex64, name="y_0_i", constraint=pos_real_constraint)
     target_t = tf.constant(target, shape=(nodes, nodes), dtype=tf.complex64)
 
     optimizer = tf.keras.optimizers.Adam(lr)
@@ -329,8 +361,29 @@ def jsi_backprop(nodes, target, EPOCHS, lr=1e-4, length=5, padding=0):
             gradients = tape.gradient(loss, [js_s, js_i, g, y_ex_s, y_ex_i, y_0_s, y_0_i])  # Compute gradients
             optimizer.apply_gradients(zip(gradients, [js_s, js_i, g, y_ex_s, y_ex_i, y_0_s, y_0_i]))  # Update weights
         return loss
-        
-    for j in trange(int(EPOCHS), desc="iterations"):
-        losses[j] = train_step(loss_func, model, target_t, js_s, js_i, g, y_ex_s, y_ex_i, y_0_s, y_0_i)
-        
-    return (js_s.numpy(), js_i.numpy(), g.numpy(), y_ex_s.numpy(), y_ex_i.numpy(), y_0_s.numpy(), y_0_i.numpy(), losses)
+    try:
+        for j in trange(int(EPOCHS), desc="iterations"):
+            losses[j] = train_step(loss_func, model, target_t, js_s, js_i, g, y_ex_s, y_ex_i, y_0_s, y_0_i)
+    except KeyboardInterrupt:
+        data['js_s'] = js_s.numpy()
+        data['js_i'] = js_i.numpy()
+        data['g'] = g.numpy()
+        data['y_0_s'] = y_0_s.numpy()
+        data['y_0_i'] = y_0_i.numpy()
+        data['y_ex_s'] = y_ex_s.numpy()
+        data['y_ex_i'] = y_ex_i.numpy()
+        np.savez('_chkpt.npz', **data)
+        print("Interrupted. Progress is saved at _chkpt.npz")
+        try:
+            sys.exit(130)
+        except SystemExit:
+            os._exit(130)
+
+    data['js_s'] = js_s.numpy()
+    data['js_i'] = js_i.numpy()
+    data['g'] = g.numpy()
+    data['y_0_s'] = y_0_s.numpy()
+    data['y_0_i'] = y_0_i.numpy()
+    data['y_ex_s'] = y_ex_s.numpy()
+    data['y_ex_i'] = y_ex_i.numpy()
+    return (data, losses)
