@@ -38,16 +38,16 @@ To enable interactive matplotlib figures, install [ipympl](https://matplotlib.or
 - Code compartmentalization and speedups
 
 ## v 3.1.1
-    ### Bugfixes
-     - Fixed loss calculation blowing up
-     - Fixed tensorflow model descrepancies
+### Bugfixes
+    - Fixed loss calculation blowing up
+    - Fixed tensorflow model descrepancies
 
 ## v 3.1.0
 - Approximation algorithm using Adam gradient descdent
 
 ## v 3.0.1
-    ### Bugfixes
-     - Fixed heatmap representation having rows flipped
+### Bugfixes
+    - Fixed heatmap representation having rows flipped
 
 ## v 3.0.0
 - Tensorflow integration in preperation for NN training
@@ -59,8 +59,8 @@ To enable interactive matplotlib figures, install [ipympl](https://matplotlib.or
 - Added k-space calculation with defined period
 
 ## v 2.2.4
-    ### Bugfixes
-     - Fixed index error for k-space eigenvalue calculations
+### Bugfixes
+    - Fixed index error for k-space eigenvalue calculations
 
 ## v 2.2.3
 - Added eigenvalue calculation for real and k-space

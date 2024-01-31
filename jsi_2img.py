@@ -15,5 +15,4 @@ with np.load(args.input) as input:
     data = dict(input)
 
 jsi.data2HM(data)
-plt.savefig(args.output)
- 
+plt.savefig(args.output.resolve())

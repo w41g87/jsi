@@ -1,10 +1,11 @@
-import sys, os
+import sys, os, datetime
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 import warnings
 import math
 import tensorflow as tf
+from pathlib import Path
 from tqdm.autonotebook import trange
 
 # helpers
@@ -54,27 +55,29 @@ def pltSect(input, x, y, sx, sy):
 def data2HM(data):
     nodes = data['nodes']
     padding = data['padding']
-    js_p = list(zip(np.abs(data['js_s']), np.abs(data['js_i'])))
-    phis_p = list(zip(np.angle(data['js_s']), np.angle(data['js_i'])))
+    # js_p = list(zip(np.abs(data['js_s']), np.abs(data['js_i'])))
+    # phis_p = list(zip(np.angle(data['js_s']), np.angle(data['js_i'])))
+    js_p = list(zip(np.abs(data['js_s']), np.abs(data['js_s'])))
+    phis_p = list(zip(np.angle(data['js_s']), np.angle(data['js_s'])))
     js_nh_p = list(zip(np.zeros(len(js_p)), np.zeros(len(js_p))))
     phis_nh_p = list(zip(np.zeros(len(js_p)), np.zeros(len(js_p))))
     g_p = data['g']
     
     def y_0_p(isSig, n):
         if isSig:
-            return np.real(data['y_0_s'])
+            return np.real(data['y_0_s'][0, n])
         else:
-            return np.real(data['y_0_i'])
+            return np.real(data['y_0_i'][n, 0])
     def y_ex_p(isSig, n):
         if isSig:
-            return np.real(data['y_ex_s'])
+            return np.real(data['y_ex_s'][0, n])
         else:
-            return np.real(data['y_ex_i'])
+            return np.real(data['y_ex_i'][n, 0])
             
     return pltSect(jsi(nodes + padding * 2, js_p, phis_p, js_nh_p, phis_nh_p, g_p, y_0_p, y_ex_p, 0, 0, 0, 0), padding, padding, nodes, nodes)
 
 def mkMtrx (nodes, js, phis, js_nh, phis_nh, g, y_0, y_ex, w, partial={}):
-    output = np.zeros([nodes * 2, nodes * 2], dtype = np.complex_)
+    output = np.zeros([nodes * 2, nodes * 2], dtype = np.complex64)
     cpl_a = []#np.zeros(3, dtype = np.complex_)
     cpl_s = []#np.zeros(3, dtype = np.complex_)
 
@@ -113,31 +116,75 @@ def mkMtrx (nodes, js, phis, js_nh, phis_nh, g, y_0, y_ex, w, partial={}):
     
     return output
 
-def mask(nodes, isSig, isRight, n):
-    output = np.zeros([nodes * 2, nodes * 2], dtype = np.uint32)
+# def mask(nodes, isSig, isRight, n):
+#     output = np.zeros([nodes * 2, nodes * 2], dtype = np.uint32)
+#     for i in range(nodes):
+#         if isSig:
+#             row = nodes - i - 1
+#             if (isRight and i - n >= 0):
+#                 output[row + n][row] = 1
+#             if (not isRight and i + n < nodes):
+#                 output[row - n][row] = 1
+#         else:
+#             row = nodes + i
+#             if (not isRight and i - n >= 0):
+#                 output[row - n][row] = 1
+#             if (isRight and i + n < nodes):
+#                 output[row + n][row] = 1
+#     return output
+
+# def maskG(nodes, isSig):
+#     output = np.zeros([nodes * 2, nodes * 2], dtype = np.uint32)
+#     for i in range(nodes):
+#         if isSig:
+#             output[nodes + i][nodes - i - 1] = 1
+#         else:
+#             output[nodes - i - 1][nodes + i] = 1
+#     return output
+
+def maskr(nodes, n_ring, n):
+    output = np.zeros([nodes * 2 * n_ring, nodes * 2 * n_ring], dtype = np.uint32)
+    pad = n * 2 * nodes
     for i in range(nodes):
-        if isSig:
-            row = nodes - i - 1
-            if (isRight and i - n >= 0):
-                output[row + n][row] = 1
-            if (not isRight and i + n < nodes):
-                output[row - n][row] = 1
+        
+        if n == 0:
+            output[i][nodes * 2 - 1 - i] = 1
+            output[nodes + i][nodes - i - 1] = -1
         else:
-            row = nodes + i
-            if (not isRight and i - n >= 0):
-                output[row - n][row] = 1
-            if (isRight and i + n < nodes):
-                output[row + n][row] = 1
+            output[pad - nodes * 2 + i][pad + i] = 1
+            output[pad - nodes + i][pad + nodes + i] = -1
+            # hermitian
+            output[pad + i][pad - nodes * 2 + i] = -1
+            output[pad + nodes + i][pad - nodes + i] = 1
+            # non-hermitian?
+            # output[pad + i][pad - nodes * 2 + i] = 1
+            # output[pad + nodes + i][pad - nodes + i] = -1
+
+        output[pad + i][pad + i] = 2
+        output[pad + nodes + i][pad + nodes + i] = -2
+        
+        for j in [x + 1 for x in range(nodes - 1)]:
+            if i + j < nodes:
+                output[pad + i][pad + i + j] = 2 * j + 1
+                output[pad + nodes + i][pad + nodes + i + j] = -2 * j - 1
+            if i - j >= 0:
+                output[pad + i][pad + i - j] = 2 * j + 2
+                output[pad + nodes + i][pad + nodes + i - j] = -2 * j - 2
     return output
 
-def maskG(nodes, isSig):
-    output = np.zeros([nodes * 2, nodes * 2], dtype = np.uint32)
+def mask2(nodes, n_ring, n):
+    output = np.zeros([nodes * 2 * n_ring, nodes * 2 * n_ring], dtype = np.uint32)
+    pad = n * 2 * nodes
     for i in range(nodes):
-        if isSig:
-            output[nodes + i][nodes - i - 1] = 1
-        else:
-            output[nodes - i - 1][nodes + i] = 1
+        output[pad + i][pad + i] = -1
+        output[pad + nodes + i][pad + nodes + i] = 1
+        if i > 0:
+            output[pad - nodes * 2 + i][pad + i] = -2
+            output[pad - nodes + i][pad + nodes + i] = 2
+            output[pad + i][pad - nodes * 2 + i] = -3
+            output[pad + nodes + i][pad - nodes + i] = 3
     return output
+            
 # Eigenvalue calculation
 def eigenRSpace (nodes, js, phis, js_nh, phis_nh, g, y_0, y_ex):
     h_eff = mkMtrx(nodes, js, phis, js_nh, phis_nh, g, y_0, y_ex, 0) * (-1j)
@@ -235,7 +282,7 @@ def eigSort(input):
     return [x % (nodes / 2) if x > 0 else (-x - 1) % (nodes / 2) for x in output]
 
 def jsi(nodes, js, phis, js_nh, phis_nh, g, y_0, y_ex, w1, w2, w3, w4, partial={}):
-    output = np.zeros((nodes, nodes), dtype = np.complex_)
+    output = np.zeros((nodes, nodes), dtype = np.complex64)
 
     if (np.abs(w1 + w2) < 1e-13 and np.abs(w3 + w4) < 1e-13):
         m1 = mkMtrx(nodes, js, phis, js_nh, phis_nh, g, y_0, y_ex, w1, partial)
@@ -244,9 +291,9 @@ def jsi(nodes, js, phis, js_nh, phis_nh, g, y_0, y_ex, w1, w2, w3, w4, partial={
         m4 = mkMtrx(nodes, js, phis, js_nh, phis_nh, g, y_0, y_ex, w4, partial)
         # print(m1)
         m = tf.constant(np.array([m1, m2, m3, m4]), shape=(4, nodes * 2, nodes * 2), dtype = tf.complex64)
-        y_ex_S = tf.constant(np.array([y_ex(True, x) for x in range(nodes)]), shape=(nodes, ), dtype = tf.complex64)
+        y_ex_S = tf.constant(np.array([y_ex(True, x) for x in range(nodes)]), shape=(nodes, 1), dtype = tf.complex64)
         y_ex_I = tf.constant(np.array([y_ex(False, x) for x in range(nodes)]), shape=(1, nodes), dtype=tf.complex64)
-        y_0_S = tf.constant(np.array([y_0(True, x) for x in range(nodes)]), shape=(nodes, ), dtype=tf.complex64)
+        y_0_S = tf.constant(np.array([y_0(True, x) for x in range(nodes)]), shape=(nodes, 1), dtype=tf.complex64)
         y_0_I = tf.constant(np.array([y_0(False, x) for x in range(nodes)]), shape=(1, nodes), dtype=tf.complex64)
         
         u = tf.linalg.inv(m)
@@ -267,123 +314,157 @@ def jsi(nodes, js, phis, js_nh, phis_nh, g, y_0, y_ex, w1, w2, w3, w4, partial={
         # print(output)
     return output
 
-def jsi_backprop(init, EPOCHS, lr=1e-4):
+def jsi_backprop(init, EPOCHS, lr=1e-4, train=True):
     nodes = init.get('nodes')
     padding = init.get('padding')
     target = init.get('target')
-    length = nodes + padding * 2 - 1
+    n_rings = init.get('n_rings', 1)
+    orth_itr = init.get('orth_itr', 3)
     data = init.copy()
     nodes_t = nodes + 2 * padding
+    length = nodes_t - 1
     losses = np.zeros(int(EPOCHS), dtype=np.float32)
     pi = tf.constant(np.pi, dtype=tf.complex64)
-    y_s_mask = tf.constant(mask(nodes_t, True, True, 0), dtype = tf.int32)
-    y_i_mask = tf.constant(mask(nodes_t, False, True, 0), dtype = tf.int32)
-    g_s_mask = tf.constant(maskG(nodes_t, True), dtype = tf.int32)
-    g_i_mask = tf.constant(maskG(nodes_t, False), dtype = tf.int32)
-    mask_arr = []
-    
-    for i in range(length):
-        mask_arr.append( [mask(nodes_t, True, True, i + 1), mask(nodes_t, True, False, i + 1), mask(nodes_t, False, True, i + 1), mask(nodes_t, False, False, i + 1)] )
-
+    mask_arr1 = []
+    # mask_arr2 = []
+    if n_rings < 1:
+        raise ValueError("ring count cannot be less than 1, but got " + str(n_rings))
+        
+    for i in range(n_rings):
+        mask_arr1.append( maskr(nodes_t, n_rings, i) )
+        # mask_arr2.append( mask2(nodes_t, n_rings, i) )
+        
+    @tf.function
     def pos_real_constraint(x):
         return tf.cast(tf.abs(tf.math.real(x)), tf.complex64)
-    j_mask = tf.constant(mask_arr, dtype=tf.int32)
-    js_s = tf.Variable(init.get('js_s', np.ones((length, ), dtype=np.complex64) / 10), shape=[length], name="coupling_s", dtype=tf.complex64)
-    js_i = tf.Variable(init.get('js_i', np.ones((length, ), dtype=np.complex64) / 10), shape=[length], name="coupling_i", dtype=tf.complex64)
+        
+    masks = tf.constant(mask_arr1, dtype=tf.int32)
+    # masks2 = tf.constant(mask_arr2, dtype=tf.int32)
+    js = tf.Variable(init.get('js', np.ones((n_rings, length), dtype=np.complex64) / 10), name="coupling", dtype=tf.complex64)
     g = tf.Variable(init.get('g', 0.03), dtype=tf.complex64, name="g", constraint=pos_real_constraint)
-    y_ex_s = tf.Variable(init.get('y_ex_s', 0.1), dtype=tf.complex64, name="y_ex_s", constraint=pos_real_constraint)
-    y_ex_i = tf.Variable(init.get('y_ex_i', 0.1), dtype=tf.complex64, name="y_ex_i", constraint=pos_real_constraint)
-    y_0_s = tf.Variable(init.get('y_0_s', 0.1), dtype=tf.complex64, name="y_0_s", constraint=pos_real_constraint)
-    y_0_i = tf.Variable(init.get('y_0_i', 0.1), dtype=tf.complex64, name="y_0_i", constraint=pos_real_constraint)
-    target_t = tf.constant(target, shape=(nodes, nodes), dtype=tf.complex64)
+    jr = tf.Variable(init.get('jr', np.ones((n_rings, nodes_t * 2), dtype=np.complex64) / 10), name="interring", dtype=tf.complex64, constraint=pos_real_constraint)
+    y0s = tf.Variable(init.get('y0s', np.ones((n_rings, nodes_t * 2), dtype=np.complex64) / 10), name="loss", dtype=tf.complex64, constraint=pos_real_constraint)
 
+    target_t = tf.constant(target, shape=(nodes, nodes), dtype=tf.complex64)
+    output = None
+    
     optimizer = tf.keras.optimizers.Adam(lr)
 
     @tf.function(input_signature=(
         tf.TensorSpec(shape=tf.shape(target_t), dtype=tf.complex64),
-        tf.TensorSpec(shape=tf.shape(target_t), dtype=tf.complex64)
     ))
-    def loss_func(target, pred):
+    def loss_func(pred):
         # RMS
         # return tf.sqrt(tf.reduce_mean(tf.math.real(tf.math.conj(output - target_t) * (output - target_t))))
 
         # vector projection
         return tf.cast(
-                1 - tf.abs( tf.tensordot(tf.math.conj(target), pred, axes=2) * tf.tensordot(tf.math.conj(pred), target, axes=2) )
-                           / (tf.abs((tf.tensordot(tf.math.conj(pred),  pred, axes=2)) * tf.tensordot(tf.math.conj(target), target, axes=2)))
+                1 - tf.abs( tf.tensordot(tf.math.conj(target_t), pred, axes=2) * tf.tensordot(tf.math.conj(pred), target_t, axes=2) )
+                           / (tf.abs((tf.tensordot(tf.math.conj(pred),  pred, axes=2)) * tf.tensordot(tf.math.conj(target_t), target_t, axes=2)))
                 , tf.float32)
     
     @tf.function(input_signature=(
-        tf.TensorSpec(shape=tf.shape(js_s), dtype=tf.complex64, name="coupling_s"),
-        tf.TensorSpec(shape=tf.shape(js_i), dtype=tf.complex64, name="coupling_i"),
+        tf.TensorSpec(shape=tf.shape(js), dtype=tf.complex64, name="coupling"),
+        tf.TensorSpec(shape=tf.shape(jr), dtype=tf.complex64, name="interring"),
         tf.TensorSpec(shape=tf.shape(g), dtype=tf.complex64, name="g"),
-        tf.TensorSpec(shape=tf.shape(y_ex_s), dtype=tf.complex64, name="y_ex_s"),
-        tf.TensorSpec(shape=tf.shape(y_ex_i), dtype=tf.complex64, name="y_ex_i"),
-        tf.TensorSpec(shape=tf.shape(y_0_s), dtype=tf.complex64, name="y_0_s"),
-        tf.TensorSpec(shape=tf.shape(y_0_i), dtype=tf.complex64, name="y_0_i")
+        tf.TensorSpec(shape=tf.shape(y0s), dtype=tf.complex64, name="loss")
     ))
-    def model(js_s, js_i, g, y_ex_s, y_ex_i, y_0_s, y_0_i):
-        m = tf.where(tf.equal(y_s_mask, 1), (y_ex_s + y_0_s) / 2, tf.cast(tf.zeros_like(y_s_mask), tf.complex64)) \
-                + tf.where(tf.equal(y_i_mask, 1), (y_ex_i + y_0_i) / 2, tf.cast(tf.zeros_like(y_i_mask), tf.complex64)) \
-                + tf.where(tf.equal(g_s_mask, 1), 1j * g, tf.cast(tf.zeros_like(g_s_mask), tf.complex64)) \
-                + tf.where(tf.equal(g_i_mask, 1), -1j * g, tf.cast(tf.zeros_like(g_i_mask), tf.complex64))
+    def model(js, jr, g, y0s):
+        zero = tf.constant(0, dtype=tf.complex64)
+        m = tf.linalg.diag(tf.reshape(y0s / 2, [-1]))
+        a = tf.zeros((n_rings * 2 * nodes_t, n_rings * 2 * nodes_t), dtype=tf.complex64)
+        b = tf.zeros((n_rings * 2 * nodes_t, n_rings * 2 * nodes_t), dtype=tf.complex64)
+        for i in tf.range(n_rings):
+            # a += tf.where(tf.equal(masks2[i], -1), -1j * tf.math.sqrt(tf.reshape(y0s, [-1])), 0) \
+            #     + tf.where(tf.equal(masks2[i], 1), 1j * tf.math.sqrt(tf.reshape(y0s, [-1])), 0)
+            a += tf.where(tf.equal(masks[i], 2), -1j * tf.math.sqrt(tf.reshape(y0s, [-1])), 0) \
+                + tf.where(tf.equal(masks[i], -2), 1j * tf.math.sqrt(tf.reshape(y0s, [-1])), 0)
 
-        for i in tf.range(length):
-            m = m + tf.where(tf.equal(j_mask[i, 0], 1), 1j * js_s[i] / 2, tf.cast(tf.zeros_like(j_mask[i,0]), tf.complex64)) \
-                    + tf.where(tf.equal(j_mask[i, 1], 1), 1j * tf.math.conj(js_s[i]) / 2, tf.cast(tf.zeros_like(j_mask[i,1]), tf.complex64)) \
-                    + tf.where(tf.equal(j_mask[i, 2], 1), -1j * tf.math.conj(js_i[i]) / 2, tf.cast(tf.zeros_like(j_mask[i,2]), tf.complex64)) \
-                    + tf.where(tf.equal(j_mask[i, 3], 1), -1j * js_i[i] / 2, tf.cast(tf.zeros_like(j_mask[i,3]), tf.complex64))
+            if i == 0: 
+                # first ring
+                m += tf.where(tf.equal(masks[0], 1), -1j * g, 0) \
+                    + tf.where(tf.equal(masks[0], -1), 1j * g, 0) \
+                    + tf.where(tf.equal(masks[0], 2), tf.tile((jr[0] + (jr[1] if n_rings > 1 else zero)) / 2, [n_rings]), 0) \
+                    + tf.where(tf.equal(masks[0], -2), tf.tile((jr[0] + (jr[1] if n_rings > 1 else zero)) / 2, [n_rings]), 0)
+            else:
+                m += tf.where(tf.equal(masks[i], 1), tf.tile(1j * jr[i] / 2, [n_rings]), 0) \
+                    + tf.where(tf.equal(masks[i], -1), tf.tile(-1j * jr[i] / 2, [n_rings]), 0) \
+                    + tf.where(tf.equal(masks[i], 2), tf.tile((jr[i] + (jr[i + 1] if n_rings > (i + 1) else zero)) / 2, [n_rings]), 0) \
+                    + tf.where(tf.equal(masks[i], -2), tf.tile((jr[i] + (jr[i + 1] if n_rings > (i + 1) else zero)) / 2, [n_rings]), 0)
         
-        # print(m.numpy())
-        u = tf.linalg.inv(m)
+                b += tf.where(tf.equal(masks[i], 1), tf.tile(1j * jr[i] / 2, [n_rings]), 0) \
+                    + tf.where(tf.equal(masks[i], -1), tf.tile(-1j * jr[i] / 2, [n_rings]), 0)
+                # b += tf.where(tf.equal(masks2[i], 2), 1j * jr[i - 1] / 2, 0) \
+                #     + tf.where(tf.equal(masks2[i], -2), -1j * jr[i - 1] / 2, 0) \
+                #     + tf.where(tf.equal(masks2[i], 3), 1j * jr[i] / 2, 0) \
+                #     + tf.where(tf.equal(masks2[i], -3), -1j * jr[i] / 2, 0)
+            for j in tf.range(length):  
+                m += tf.where(tf.equal(masks[i], j * 2 + 3), 1j * js[i][j] / 2, 0) \
+                    + tf.where(tf.equal(masks[i], j * 2 + 4), 1j * tf.math.conj(js[i][j]) / 2, 0) \
+                    + tf.where(tf.equal(masks[i], -j * 2 - 3), -1j * tf.math.conj(js[i][j])/ 2, 0) \
+                    + tf.where(tf.equal(masks[i], -j * 2 - 4), -1j * js[i][j] / 2, 0)
+        # print(m)
+
+        for i in tf.range(orth_itr):
+            a = a + tf.matmul(b, a)
+            b = tf.matmul(b, b)
+        u = tf.matmul(tf.linalg.inv(m), a)
         
         # print(u.numpy())
-        u1 = tf.math.conj(tf.reverse(u[nodes_t: 2 * nodes_t, 0 : nodes_t], [1]))
-        u2 = u[nodes_t : 2 * nodes_t, nodes_t : 2 * nodes_t]
-        u3 = tf.math.conj(u[nodes_t : 2 * nodes_t, nodes_t : 2 * nodes_t])
-        u4 = tf.reverse(u[nodes_t : 2 * nodes_t, 0 : nodes_t], [1])
+        u4 = tf.reverse(u[0 : nodes_t, nodes_t: 2 * nodes_t], [0])
+        # u2 = u[nodes_t : 2 * nodes_t, nodes_t : 2 * nodes_t]
+        # u3 = tf.math.conj(u2)
+        u1 = tf.math.conj(u4)
 
-        u1u2 = tf.linalg.matmul(u1, tf.transpose(u2))
-        u3u4 = tf.linalg.matmul(u4, tf.transpose(u3))
+        u4_p = tf.reverse(tf.concat([u[0 : nodes_t, (i * 2 + 1) * nodes_t : (i * 2 + 2) * nodes_t] for i in range(n_rings)], axis=1), [0])
+        u2_p = tf.concat([u[nodes_t : 2 * nodes_t, (i * 2 + 1) * nodes_t : (i * 2 + 2) * nodes_t] for i in range(n_rings)], axis=1)
+        u3_p = tf.math.conj(u2_p)
+        u1_p = tf.math.conj(u4_p)
 
-        y_ex_s_t = tf.fill([nodes_t], y_ex_s)
-        y_ex_i_t = tf.fill([1, nodes_t], y_ex_i)
-        y_0_s_t = tf.fill([nodes_t], y_0_s)
-        y_0_i_t = tf.fill([1, nodes_t], y_0_i)
+        u1u2_p = tf.linalg.matmul(u1_p, tf.transpose(u2_p))
+        u3u4_p = tf.linalg.matmul(u4_p, tf.transpose(u3_p))
         
-        return (y_ex_s_t * y_ex_i_t * ((u1 - (y_0_i_t + y_ex_i_t) * u1u2) * (u4 - (y_0_s_t + y_ex_s_t) * u3u4)) * tf.constant(4, dtype=tf.complex64) * pi * pi)[padding : nodes + padding, padding : nodes + padding]
+        return (tf.tensordot(tf.reverse(tf.math.sqrt(jr[0][0 : nodes_t]), [0]), tf.math.sqrt(jr[0][nodes_t : nodes_t * 2]), axes=0) * (u1 + 1j * tf.transpose(tf.math.sqrt(jr[0][nodes_t : nodes_t * 2])) * u1u2_p) * (u4 + 1j * tf.math.sqrt(jr[0][0 : nodes_t]) * u3u4_p) * tf.constant(-4, dtype=tf.complex64) * pi * pi)[padding : nodes + padding, padding : nodes + padding]
 
     @tf.function
-    def train_step(loss_func, model, target, js_s, js_i, g, y_ex_s, y_ex_i, y_0_s, y_0_i):
+    def train_step(loss_func, model, js, jr, g, y0s):
         with tf.GradientTape() as tape:
-            pred = model(js_s, js_i, g, y_ex_s, y_ex_i, y_0_s, y_0_i)
-            loss = loss_func(target, pred)
-            gradients = tape.gradient(loss, [js_s, js_i, g, y_ex_s, y_ex_i, y_0_s, y_0_i])  # Compute gradients
-            optimizer.apply_gradients(zip(gradients, [js_s, js_i, g, y_ex_s, y_ex_i, y_0_s, y_0_i]))  # Update weights
+            pred = model(js, jr, g, y0s)
+            loss = loss_func(pred)
+            gradients = tape.gradient(loss, [js, jr, g, y0s])  # Compute gradients
+            optimizer.apply_gradients(zip(gradients, [js, jr, g, y0s]))  # Update weights
         return loss
+        
     try:
-        for j in trange(int(EPOCHS), desc="iterations"):
-            losses[j] = train_step(loss_func, model, target_t, js_s, js_i, g, y_ex_s, y_ex_i, y_0_s, y_0_i)
+        tf.profiler.experimental.stop()
+    except:
+        pass
+    try:
+        # tf.profiler.experimental.start('log/' + datetime.datetime.now().strftime('%y-%m-%d-%H-%M-%S') + '.log')
+        if train:
+            for j in trange(int(EPOCHS), desc="iterations"):
+                loss = train_step(loss_func, model, js, jr, g, y0s)
+                losses[j] = loss.numpy()
+        else:
+            losses = [init.get('loss', 0), ]
+
+        # tf.profiler.experimental.stop()
     except KeyboardInterrupt:
-        data['js_s'] = js_s.numpy()
-        data['js_i'] = js_i.numpy()
+        # tf.profiler.experimental.stop()
+        data['js'] = js.numpy()
+        data['jr'] = jr.numpy()
         data['g'] = g.numpy()
-        data['y_0_s'] = y_0_s.numpy()
-        data['y_0_i'] = y_0_i.numpy()
-        data['y_ex_s'] = y_ex_s.numpy()
-        data['y_ex_i'] = y_ex_i.numpy()
-        np.savez('_chkpt.npz', **data)
+        data['y0s'] = y0s.numpy()
+        data['loss'] = losses[-1]
+        np.savez(Path('./_chkpt.npz').resolve(), **data)
         print("Interrupted. Progress is saved at _chkpt.npz")
         try:
             sys.exit(130)
         except SystemExit:
             os._exit(130)
 
-    data['js_s'] = js_s.numpy()
-    data['js_i'] = js_i.numpy()
+    data['js'] = js.numpy()
+    data['jr'] = jr.numpy()
     data['g'] = g.numpy()
-    data['y_0_s'] = y_0_s.numpy()
-    data['y_0_i'] = y_0_i.numpy()
-    data['y_ex_s'] = y_ex_s.numpy()
-    data['y_ex_i'] = y_ex_i.numpy()
-    return (data, losses)
+    data['y0s'] = y0s.numpy()
+    return (data, losses, model(js, jr, g, y0s).numpy())
