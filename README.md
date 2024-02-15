@@ -26,6 +26,14 @@ To enable interactive matplotlib figures, install [ipympl](https://matplotlib.or
 
 # Change Log
 
+## v 4.0.1
+- Integrated JSI generation
+### Bugfixes
+- Calibrated derivation against 1-node analytical result
+
+## v 4.0.0
+- Multi-ring optimization
+
 ## v 3.2.2
 - Added checkpoint for segmented training
 - Added CLI utilities to train/resume training and generate image to file
