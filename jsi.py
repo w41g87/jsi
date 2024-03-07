@@ -328,7 +328,7 @@ def jsi_backprop(init, EPOCHS=None, lr=1e-4, train=True):
     orth_itr = init.get('orth_itr', 3)
     data = init.copy()
     nodes_t = nodes + 2 * padding
-    length = nodes_t - 1
+    length = init.get('length', nodes_t - 1)
     losses = np.zeros(int(EPOCHS if EPOCHS else 1), dtype=np.float32)
     pi = tf.constant(np.pi, dtype=tf.complex64)
     zero = tf.constant(0, dtype=tf.complex64)
