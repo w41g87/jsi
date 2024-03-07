@@ -52,6 +52,34 @@ def pltSect(input, x, y, sx, sy):
 
     return fig
 
+def pltCtst(target, approx, x, y, sx, sy):
+    fig, ax = plt.subplots(nrows=1, ncols=2, figsize=(25, 10), dpi=50)
+    
+    heatMap_t = sns.heatmap(np.abs(target[x:sx + x, y:sy + y]), ax = ax[0], linewidth = 0, annot = False, cmap = "viridis")
+    heatMap_t.set_title("Target")
+    heatMap_t.set_xticks(np.arange(0, sx, int(np.ceil(sx / 20))))
+    heatMap_t.set_xticklabels(np.arange(x, x + sx, int(np.ceil(sx / 20))))
+    heatMap_t.set_yticks(np.arange(0, sy, int(np.ceil(sy / 20))))
+    heatMap_t.set_yticklabels(np.arange(-y, -y - sy, int(-np.ceil(sy / 20))), rotation = 0)
+
+    heatMap_a = sns.heatmap(np.abs(approx[x:sx + x, y:sy + y]), ax = ax[1], linewidth = 0, annot = False, cmap = "viridis")
+    heatMap_a.set_title("Approximation")
+    heatMap_a.set_xticks(np.arange(0, sx, int(np.ceil(sx / 20))))
+    heatMap_a.set_xticklabels(np.arange(x, x + sx, int(np.ceil(sx / 20))))
+    heatMap_a.set_yticks(np.arange(0, sy, int(np.ceil(sy / 20))))
+    heatMap_a.set_yticklabels(np.arange(-y, -y - sy, int(-np.ceil(sy / 20))), rotation = 0)
+    try:
+        get_ipython
+        fig.canvas.layout.width = '100%'
+        fig.canvas.layout.height = '100%'
+        fig.canvas.layout.overflow = 'scroll'
+        fig.canvas.layout.padding = '0px'
+        fig.canvas.layout.margin = '0px'
+    except:
+        pass
+
+    return fig
+
 def data2HM(data):
     nodes = data['nodes']
     padding = data['padding']
@@ -255,7 +283,7 @@ def eigSort(input):
     output = [max( (np.abs(v), i) for i, v in enumerate(a) )[1] - nodes for a in input[1]]
     return [x % (nodes / 2) if x > 0 else (-x - 1) % (nodes / 2) for x in output]
 
-def jsi(nodes, js, phis, js_nh, phis_nh, g, y_0, y_ex, w1, w2, w3, w4, partial={}):
+def jsi(nodes, js, phis, js_nh, phis_nh, g, y_0, y_ex, w1, w2, w3, w4):
     warnings.warn("DEPRECATED: please use the jsi_backprop() with train=False option")
     output = np.zeros((nodes, nodes), dtype = np.complex64)
 
@@ -274,7 +302,7 @@ def jsi(nodes, js, phis, js_nh, phis_nh, g, y_0, y_ex, w1, w2, w3, w4, partial={
         u = tf.linalg.inv(m)
         # print(m[0].numpy())
         # print(u[0].numpy())
-        u1 = tf.math.conj(tf.reverse(u[0, nodes : 2 * nodes, 0 : nodes], [1]))
+        u1 = tf.math.conj(tf.reverse(u[0, nodes : 2 * nodes, 0 : nodes], [0]))
         u2 = u[1, nodes : 2 * nodes, nodes : 2 * nodes]
         u3 = tf.math.conj(u[2, nodes : 2 * nodes, nodes : 2 * nodes])
         u4 = tf.reverse(u[3, nodes : 2 * nodes, 0 : nodes], [1])
@@ -399,7 +427,8 @@ def jsi_backprop(init, EPOCHS=None, lr=1e-4, train=True):
             b = tf.matmul(b, b)
             
         u = tf.matmul(tf.linalg.inv(m), a[nodes_t * 2 : nodes_t * 2 * (n_rings + 1)])
-
+        # print(tf.linalg.eigvals(m).numpy())
+        # print(tf.linalg.eigvals(u[0 : nodes_t * 2, 0: 2 * nodes_t]).numpy())
         u4 = tf.reverse(u[0 : nodes_t, nodes_t: 2 * nodes_t], [0])
         u1 = tf.math.conj(u4)
 
@@ -411,7 +440,7 @@ def jsi_backprop(init, EPOCHS=None, lr=1e-4, train=True):
         u1u2_p = tf.linalg.matmul(u1_p, tf.transpose(u2_p))
         u3u4_p = tf.linalg.matmul(u4_p, tf.transpose(u3_p))
 
-        return (tf.reverse(jr[0][0 : nodes_t], [0]) * (u1 - 1j * tf.transpose(tf.math.sqrt(jr[0][nodes_t : nodes_t * 2])) * u1u2_p) * (u4 + 1j * tf.transpose(tf.math.sqrt(jr[0][nodes_t : nodes_t * 2])) * u3u4_p) * tf.constant(4, dtype=tf.complex64) * pi * pi)[padding : nodes + padding, padding : nodes + padding]
+        return (tf.reshape(tf.reverse(jr[0][0 : nodes_t], [0]), (nodes_t, 1)) * (u1 - 1j * tf.math.sqrt(jr[0][nodes_t : nodes_t * 2]) * u1u2_p) * (u4 + 1j * tf.math.sqrt(jr[0][nodes_t : nodes_t * 2]) * u3u4_p) * tf.constant(4, dtype=tf.complex64) * pi * pi)[padding : nodes + padding, padding : nodes + padding]
 
     @tf.function
     def train_step(loss_func, model, js, jr, g, y0s):
@@ -446,6 +475,7 @@ def jsi_backprop(init, EPOCHS=None, lr=1e-4, train=True):
         np.savez(Path('./_chkpt.npz').resolve(), **data)
         print("Interrupted. Progress is saved at _chkpt.npz")
         try:
+            data['int'] = True
             return (data, losses, model(js, jr, g, y0s).numpy())
         except:
             try:
