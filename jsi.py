@@ -421,9 +421,7 @@ def jsi(nodes, js, phis, js_nh, phis_nh, g, y_0, y_ex, w1, w2, w3, w4):
     return output
 
 
-def jsi_backprop(init, EPOCHS=None, lr=tf.keras.optimizers.schedules.ExponentialDecay(
-    0.01, decay_steps=20, decay_rate=0.96, staircase=True
-), train=True):
+def jsi_backprop(init, EPOCHS=None, lr=None, train=True):
     if train and not EPOCHS:
         raise ValueError("training parameter \'EPOCHS\' not provided")
     
@@ -449,14 +447,17 @@ def jsi_backprop(init, EPOCHS=None, lr=tf.keras.optimizers.schedules.Exponential
     g = tf.Variable(init.get('g', 0.03), dtype=tf.complex64, name="g", constraint=pos_real_constraint)
     jr = tf.Variable(init.get('jr', np.ones((n_rings, nodes_t * 2), dtype=np.complex64) / 10), name="interring", dtype=tf.complex64, constraint=pos_real_constraint)
     y0s = tf.Variable(init.get('y0s', np.ones((n_rings, nodes_t * 2), dtype=np.complex64) / 10), name="loss", dtype=tf.complex64, constraint=pos_real_constraint)
-
     target_t = tf.zeros(shape=(nodes, nodes), dtype=tf.complex64)
-
+    min_loss = 1.0
+    best_params = [tf.Variable(p) for p in [js, jr, g, y0s]]
+    
     if train:
         target_t = tf.constant(target, shape=(nodes, nodes), dtype=tf.complex64)
     output = None
     
-    optimizer = tf.keras.optimizers.Adam(learning_rate=lr)
+    optimizer = tf.keras.optimizers.Adam(learning_rate=lr if lr else 
+                                         tf.keras.optimizers.schedules.ExponentialDecay(
+                                             1e-3, decay_steps=100, decay_rate=0.9, staircase=True))
 
     @tf.function(input_signature=(
         tf.TensorSpec(shape=tf.shape(target_t), dtype=tf.complex64),
@@ -476,9 +477,13 @@ def jsi_backprop(init, EPOCHS=None, lr=tf.keras.optimizers.schedules.Exponential
         with tf.GradientTape() as tape:
             pred = model(js, jr, g, y0s)
             loss = loss_func(pred)
-            gradients = tape.gradient(loss, [js, jr, g, y0s])  # Compute gradients
-            optimizer.apply_gradients(zip(gradients, [js, jr, g, y0s]))  # Update weights
-        return loss
+            if tf.math.reduce_any(tf.math.is_nan(tf.cast(pred, dtype=tf.float32))):
+                return tf.constant(-1, dtype=tf.float32)
+            else:
+                gradients = tape.gradient(loss, [js, jr, g, y0s])  # Compute gradients
+                clipped = [tf.cast(tf.clip_by_value(tf.abs(grad), -0.1, 0.1), dtype=tf.complex64) * tf.exp(1j * tf.cast(tf.math.angle(grad), dtype=tf.complex64)) for grad in gradients]
+                optimizer.apply_gradients(zip(clipped, [js, jr, g, y0s]))  # Update weights
+                return loss
         
     try:
         tf.profiler.experimental.stop()
@@ -487,22 +492,27 @@ def jsi_backprop(init, EPOCHS=None, lr=tf.keras.optimizers.schedules.Exponential
     try:
         # tf.profiler.experimental.start('log/' + datetime.datetime.now().strftime('%y-%m-%d-%H-%M-%S') + '.log')
         if train:
+            # Create a checkpoint object
+            ckpt = tf.train.Checkpoint(optimizer=optimizer, params=[js, jr, g, y0s])
             for j in trange(int(EPOCHS), desc="iterations"):
                 loss = train_step(loss_func, kernel, js, jr, g, y0s)
-                losses[j] = loss.numpy()
+                if loss.numpy() == -1: 
+                    warnings.warn("Interrupted due to encountering NaN in the resulting JSI\n")
+                    break
+                else: 
+                    losses[j] = loss.numpy()
+                    if loss < min_loss:
+                        min_loss = loss
+                        best_params = [old.assign(new) for old, new in zip(best_params, [js, jr, g, y0s])]
+                if j % 100 == 0:
+                    ckpt.save('./chkpt/chkpt')
         else:
             losses = [init.get('loss', 0), ]
 
         # tf.profiler.experimental.stop()
     except KeyboardInterrupt:
         # tf.profiler.experimental.stop()
-        data['js'] = js.numpy()
-        data['jr'] = jr.numpy()
-        data['g'] = g.numpy()
-        data['y0s'] = y0s.numpy()
-        data['loss'] = losses[-1]
-        np.savez(Path('./_chkpt.npz').resolve(), **data)
-        print("Interrupted. Progress is saved at _chkpt.npz")
+        print("Interrupted. Progress is saved in chkpt/")
         try:
             data['int'] = True
             return (data, losses, kernel(js, jr, g, y0s).numpy())
@@ -516,8 +526,8 @@ def jsi_backprop(init, EPOCHS=None, lr=tf.keras.optimizers.schedules.Exponential
     data['jr'] = jr.numpy()
     data['g'] = g.numpy()
     data['y0s'] = y0s.numpy()
-    data['loss'] = losses[-1]
-    return (data, losses, kernel(js, jr, g, y0s).numpy())
+    data['loss'] = min_loss
+    return (data, losses, kernel(best_params[0], best_params[1], best_params[2], best_params[3]).numpy())
 
 def jsi_conv(param, filename, epochs=5):
     nodes = param.get('nodes')

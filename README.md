@@ -25,6 +25,11 @@ To enable interactive matplotlib figures, install [ipympl](https://matplotlib.or
 </del>
 
 # Change Log
+## v 4.1.1
+- Exponential optimization lr decay as default
+- Clipped optimization gradient to avoid blowups
+### Bugfixes
+- Import library corrections
 
 ## v 4.1.0
 - NN integration
