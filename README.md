@@ -1,6 +1,6 @@
 # Info
 
-```jsi.py``` files contain all necessary function, ```jsi_run.ipynb``` provides some simple examples for generating heatmaps using the provided inputs. ```jsi_approx.py``` is a CLI utility that trains JSI parameters on a provided image, or continue training on previous data. ```jsi_2img.py``` is a CLI tool that generates JSI and saves it as an image using trained parameters
+```jsi.py``` files contain all necessary function, ```generate.ipynb``` provides some simple examples for generating heatmaps using the provided inputs; ```optimize.ipynb``` provides examples for approximating a target jsi using the gradient descent optimizer; ```nn.ipynb``` provides examples of dataset generation and training with neuro-network; ```misc.ipynb``` provides other relevant examples.
 
 # Prerequisite
 
@@ -25,6 +25,9 @@ To enable interactive matplotlib figures, install [ipympl](https://matplotlib.or
 </del>
 
 # Change Log
+
+## v 4.1.0
+- NN integration
 
 ## v 4.0.1
 - Integrated JSI generation
