@@ -25,6 +25,12 @@ To enable interactive matplotlib figures, install [ipympl](https://matplotlib.or
 </del>
 
 # Change Log
+
+## v 4.2.0
+- Custom loss class
+- jsi calculation kernel object
+- pretrained example model for mnist dataset
+
 ## v 4.1.1
 - Exponential optimization lr decay as default
 - Clipped optimization gradient to avoid blowups

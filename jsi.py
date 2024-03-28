@@ -6,6 +6,7 @@ import warnings
 import math
 import tensorflow as tf
 from tensorflow.keras import layers, models, losses
+from keras.datasets import mnist
 from pathlib import Path
 from tqdm.autonotebook import trange
 
@@ -25,8 +26,8 @@ def zipWith(arr1, arr2, func, dim):
 
     return output
 
+@tf.keras.saving.register_keras_serializable()
 class JsiKernel:
-    
     def __init__(self, nodes, padding=0, n_rings=1, length=None, orth_itr=5):
         self.nodes = nodes
         self.padding = padding
@@ -40,17 +41,75 @@ class JsiKernel:
         mask_arr1 = []
         mask_arr2 = []
         for i in range(self.n_rings):
-            mask_arr1.append( maskr(self.nodes_t, self.n_rings, i) )
-            mask_arr2.append( mask2(self.nodes_t, self.n_rings, i) )
+            mask_arr1.append( self.maskr(self.nodes_t, self.n_rings, i) )
+            mask_arr2.append( self.mask2(self.nodes_t, self.n_rings, i) )
             
-        mask_arr2.append( mask2(self.nodes_t, self.n_rings, self.n_rings) )
+        mask_arr2.append( self.mask2(self.nodes_t, self.n_rings, self.n_rings) )
         self.masks = tf.constant(mask_arr1, dtype=tf.int32)
         self.masks2 = tf.constant(mask_arr2, dtype=tf.int32)
 
         self.pi = tf.constant(np.pi, dtype=tf.complex64)
         self.zero = tf.constant(0, dtype=tf.complex64)
         self.one = tf.constant(1, dtype=tf.complex64)
+        
+    def get_config(self):
+        return {'nodes': self.nodes, 
+                'padding': self.padding, 
+                'n_rings': self.n_rings, 
+                'length': self.length, 
+                'orth_itr': self.orth_itr
+               }
 
+    def maskr(self, nodes, n_ring, n):
+        output = np.zeros([nodes * 2 * n_ring, nodes * 2 * n_ring], dtype = np.uint32)
+        pad = n * 2 * nodes
+        for i in range(nodes):
+            
+            if n == 0:
+                output[i][nodes * 2 - 1 - i] = 1
+                output[nodes + i][nodes - i - 1] = -1
+            else:
+                output[pad - nodes * 2 + i][pad + i] = -1
+                output[pad - nodes + i][pad + nodes + i] = 1
+                # hermitian
+                output[pad + i][pad - nodes * 2 + i] = -1
+                output[pad + nodes + i][pad - nodes + i] = 1
+                # non-hermitian?
+                # output[pad + i][pad - nodes * 2 + i] = 1
+                # output[pad + nodes + i][pad - nodes + i] = -1
+    
+            output[pad + i][pad + i] = 2
+            output[pad + nodes + i][pad + nodes + i] = -2
+            
+            for j in [x + 1 for x in range(nodes - 1)]:
+                if i + j < nodes:
+                    output[pad + i][pad + i + j] = 2 * j + 1
+                    output[pad + nodes + i][pad + nodes + i + j] = -2 * j - 1
+                if i - j >= 0:
+                    output[pad + i][pad + i - j] = 2 * j + 2
+                    output[pad + nodes + i][pad + nodes + i - j] = -2 * j - 2
+        return output
+    
+    def mask2(self, nodes, n_ring, n):
+        output = np.zeros([nodes * 2 * (n_ring + 1), nodes * 2 * (n_ring + 1)], dtype = np.uint32)
+        pad = 0 if n == n_ring else n + 1 * 2 * nodes
+        for i in range(nodes):
+            output[pad + i][pad + i] = -1
+            output[pad + nodes + i][pad + nodes + i] = 1
+            if pad > 0:
+                output[pad - nodes * 2 + i][pad + i] = -2
+                output[pad - nodes + i][pad + nodes + i] = 2
+                output[pad + i][pad - nodes * 2 + i] = -3
+                output[pad + nodes + i][pad - nodes + i] = 3
+        return output
+    
+    @tf.function
+    def call_flat(self, pred):
+        js = tf.cast(tf.reshape(pred[0:self.n_rings * self.length], (self.n_rings, self.length)), dtype=tf.complex64) * tf.exp(1j * tf.cast(tf.reshape(pred[self.n_rings * self.length:self.n_rings * self.length * 2], (self.n_rings, self.length)), dtype=tf.complex64))
+        jr = tf.cast(tf.reshape(pred[self.n_rings*self.length*2 : self.n_rings*self.length*2+self.nodes_t*2*self.n_rings], (self.n_rings, self.nodes_t*2)), dtype=tf.complex64)
+        g = tf.cast(pred[-1], dtype=tf.complex64)
+        y0s = tf.cast(tf.reshape(pred[self.n_rings*self.length*2+self.nodes_t*2*self.n_rings:self.n_rings*self.length*2+self.nodes_t*4*self.n_rings], (self.n_rings, self.nodes_t*2)), dtype=tf.complex64)
+        return self(js, jr, g, y0s)
         
     @tf.function
     # @tf.function(input_signature=(
@@ -60,17 +119,23 @@ class JsiKernel:
     #     tf.TensorSpec(shape=tf.shape(y0s), dtype=tf.complex64, name="loss")
     # ))
     def __call__(self, js, jr, g, y0s):
-        
         m = tf.linalg.diag(tf.reshape(y0s / 2, [-1]))
-        a = tf.where(tf.equal(self.masks2[-1], 1), self.one, self.zero) \
-            + tf.where(tf.equal(self.masks2[-1], -1), self.one, self.zero)
-        b = tf.zeros(((self.n_rings + 1) * 2 * self.nodes_t, (self.n_rings + 1) * 2 * self.nodes_t), dtype=tf.complex64)
+        # a = tf.where(tf.equal(self.masks2[-1], 1), self.one, self.zero) \
+        #     + tf.where(tf.equal(self.masks2[-1], -1), self.one, self.zero)
+        # a = -1j * tf.math.sqrt(tf.where(tf.equal(self.masks2[-1], 1), tf.tile(jr[0], [self.n_rings + 1]), 0)) \
+        #     + 1j * tf.math.sqrt(tf.where(tf.equal(self.masks2[-1], -1), tf.tile(jr[0], [self.n_rings + 1]), 0))
+        # b = tf.zeros(((self.n_rings + 1) * 2 * self.nodes_t, (self.n_rings + 1) * 2 * self.nodes_t), dtype=tf.complex64)
+
+        # jr_sqrt = tf.math.sqrt(jr)
+        
         for i in tf.range(self.n_rings):
-            # a += tf.where(tf.equal(masks2[i], -1), -1j * tf.math.sqrt(tf.reshape(y0s, [-1])), 0) \
-            #     + tf.where(tf.equal(masks2[i], 1), 1j * tf.math.sqrt(tf.reshape(y0s, [-1])), 0)
-            a += -1j * tf.math.sqrt(tf.where(tf.equal(self.masks2[i], 1), tf.tile(y0s[i], [self.n_rings + 1]), 0)) \
-                + 1j * tf.math.sqrt(tf.where(tf.equal(self.masks2[i], -1), tf.tile(y0s[i], [self.n_rings + 1]), 0))
-    
+            # a += -1j * tf.math.sqrt(tf.where(tf.equal(self.masks2[i], 1), tf.tile(y0s[i], [self.n_rings + 1]), 0)) \
+            #     + 1j * tf.math.sqrt(tf.where(tf.equal(self.masks2[i], -1), tf.tile(y0s[i], [self.n_rings + 1]), 0))
+            # b += tf.where(tf.equal(self.masks2[i], 2), tf.tile(-1j * jr_sqrt[i], [self.n_rings + 1]), 0) \
+            #     + tf.where(tf.equal(self.masks2[i], -2), tf.tile(1j * jr_sqrt[i], [self.n_rings + 1]), 0) \
+            #     + tf.where(tf.equal(self.masks2[i], 3), tf.tile(-1j * jr_sqrt[i], [self.n_rings + 1]), 0) \
+            #     + tf.where(tf.equal(self.masks2[i], -3), tf.tile(1j * jr_sqrt[i], [self.n_rings + 1]), 0)
+            
             if i == 0: 
                 # first ring
                 m += tf.where(tf.equal(self.masks[0], 1), 1j * g, 0) \
@@ -79,8 +144,8 @@ class JsiKernel:
                     + tf.where(tf.equal(self.masks[0], -2), tf.tile(jr[0] / 2, [self.n_rings]), 0)
                     # + tf.where(tf.equal(masks[0], 2), tf.tile((jr[0] + (jr[1] if n_rings > 1 else zero)) / 2, [n_rings]), 0) \
                     # + tf.where(tf.equal(masks[0], -2), tf.tile((jr[0] + (jr[1] if n_rings > 1 else zero)) / 2, [n_rings]), 0)
-                b += tf.where(tf.equal(self.masks2[i], -3), tf.tile(1j * tf.math.sqrt(jr[i]), [self.n_rings + 1]), 0) \
-                    + tf.where(tf.equal(self.masks2[i], 3), tf.tile(-1j * tf.math.sqrt(jr[i]), [self.n_rings + 1]), 0) # idler conj
+                # b += tf.where(tf.equal(self.masks2[i], -3), tf.tile(1j * jr_sqrt[i], [self.n_rings + 1]), 0) \
+                #     + tf.where(tf.equal(self.masks2[i], 3), tf.tile(-1j * jr_sqrt[i], [self.n_rings + 1]), 0) # idler conj
                 # TODO: contruct b for i == 0
             
             else:
@@ -89,31 +154,33 @@ class JsiKernel:
                     # + tf.where(tf.equal(masks[i], 2), tf.tile((jr[i] + (jr[i + 1] if n_rings > (i + 1) else zero)) / 2, [n_rings]), 0) \
                     # + tf.where(tf.equal(masks[i], -2), tf.tile((jr[i] + (jr[i + 1] if n_rings > (i + 1) else zero)) / 2, [n_rings]), 0)
         
-                b += tf.where(tf.equal(self.masks2[i], 2), tf.tile(-1j * jr[i] / 2, [self.n_rings + 1]), 0) \
-                    + tf.where(tf.equal(self.masks2[i], -2), tf.tile(1j * jr[i] / 2, [self.n_rings + 1]), 0) \
-                    + tf.where(tf.equal(self.masks2[i], 3), tf.tile(-1j * jr[i] / 2, [self.n_rings + 1]), 0) \
-                    + tf.where(tf.equal(self.masks2[i], -3), tf.tile(1j * jr[i] / 2, [self.n_rings + 1]), 0)
-                # b += tf.where(tf.equal(masks2[i], 2), 1j * jr[i - 1] / 2, 0) \
-                #     + tf.where(tf.equal(masks2[i], -2), -1j * jr[i - 1] / 2, 0) \
-                #     + tf.where(tf.equal(masks2[i], 3), 1j * jr[i] / 2, 0) \
-                #     + tf.where(tf.equal(masks2[i], -3), -1j * jr[i] / 2, 0)
+                # b += tf.where(tf.equal(self.masks2[i], 2), tf.tile(-1j * jr[i] / 2, [self.n_rings + 1]), 0) \
+                #     + tf.where(tf.equal(self.masks2[i], -2), tf.tile(1j * jr[i] / 2, [self.n_rings + 1]), 0) \
+                #     + tf.where(tf.equal(self.masks2[i], 3), tf.tile(-1j * jr[i] / 2, [self.n_rings + 1]), 0) \
+                #     + tf.where(tf.equal(self.masks2[i], -3), tf.tile(1j * jr[i] / 2, [self.n_rings + 1]), 0)
+
+                
+
             for j in tf.range(self.length):  
                 m += tf.where(tf.equal(self.masks[i], j * 2 + 3), 1j * js[i][j] / 2, 0) \
                     + tf.where(tf.equal(self.masks[i], j * 2 + 4), 1j * tf.math.conj(js[i][j]) / 2, 0) \
                     + tf.where(tf.equal(self.masks[i], -j * 2 - 3), -1j * tf.math.conj(js[i][j])/ 2, 0) \
                     + tf.where(tf.equal(self.masks[i], -j * 2 - 4), -1j * js[i][j] / 2, 0)
         # print(m)
-    
-        for i in tf.range(self.orth_itr):
-            a = a + tf.matmul(b, a)
-            b = tf.matmul(b, b)
+        # a = a + b
+        # for i in tf.range(self.orth_itr):
+        #     a = a + tf.matmul(b, a)
+        #     b = tf.matmul(b, b)
             
-        u = tf.matmul(tf.linalg.inv(m), a[self.nodes_t * 2 : self.nodes_t * 2 * (self.n_rings + 1)])
+        # u = tf.matmul(tf.linalg.inv(m + tf.cast(tf.eye(m.shape[-1]) * 0.001, dtype=tf.complex64)), a[self.nodes_t * 2 : self.nodes_t * 2 * (self.n_rings + 1)])
+        u = tf.linalg.inv(m)
         # print(tf.linalg.eigvals(m).numpy())
         # print(tf.linalg.eigvals(u[0 : nodes_t * 2, 0: 2 * nodes_t]).numpy())
-        u4 = tf.reverse(u[0 : self.nodes_t, self.nodes_t: 2 * self.nodes_t], [0])
+        u4 = tf.reverse(u[0 : self.nodes_t, self.nodes_t: 2 * self.nodes_t], [0]) * -1j * tf.math.sqrt(jr[0][self.nodes_t: 2 * self.nodes_t])
         u1 = tf.math.conj(u4)
-    
+        
+        u = u * tf.reshape(tf.math.sqrt(y0s), [-1])
+        
         u4_p = tf.reverse(tf.concat([u[0 : self.nodes_t, (i * 2 + 1) * self.nodes_t : (i * 2 + 2) * self.nodes_t] for i in range(self.n_rings + 1)], axis=1), [0])
         u2_p = tf.concat([u[self.nodes_t : 2 * self.nodes_t, (i * 2 + 1) * self.nodes_t : (i * 2 + 2) * self.nodes_t] for i in range(self.n_rings + 1)], axis=1)
         u3_p = tf.math.conj(u2_p)
@@ -124,7 +191,32 @@ class JsiKernel:
         
         return (tf.reshape(tf.reverse(jr[0][0 : self.nodes_t], [0]), (self.nodes_t, 1)) * (u1 - 1j * tf.math.sqrt(jr[0][self.nodes_t : self.nodes_t * 2]) * u1u2_p) * (u4 + 1j * tf.math.sqrt(jr[0][self.nodes_t : self.nodes_t * 2]) * u3u4_p) * tf.constant(4, dtype=tf.complex64) * self.pi * self.pi)[self.padding : self.nodes + self.padding, self.padding : self.nodes + self.padding]
 
+@tf.keras.saving.register_keras_serializable()
+class JsiError(losses.Loss):
+    def __init__(self, kernel=JsiKernel(28, 0, 5, 5, 5), reduction=losses.Reduction.AUTO, name='jsi_error'):
+        super().__init__(reduction=reduction, name=name)
+        self.kernel = kernel
 
+    def get_config(self):
+        base_config = super().get_config()
+        return {**base_config, 'kernel': self.kernel}
+        
+    def _error_calc(self, params):
+        true, pred = params
+        y_pred = self.kernel.call_flat(pred)
+        y_pred = tf.linalg.l2_normalize(y_pred)
+        has_nan = tf.math.reduce_any(tf.math.is_nan(tf.cast(y_pred, dtype=tf.float32)))
+        if has_nan:
+            return tf.constant(1.0, dtype=tf.float32)
+        y_true = tf.cast(true[:, :, 0], tf.complex64)
+        output = tf.cast(
+            1 - tf.abs( tf.tensordot(tf.math.conj(y_true), y_pred, axes=2) * tf.tensordot(tf.math.conj(y_pred), y_true, axes=2) )
+                       / (tf.abs((tf.tensordot(tf.math.conj(y_pred),  y_pred, axes=2)) * tf.tensordot(tf.math.conj(y_true), y_true, axes=2)))
+            , tf.float32)
+        return tf.constant(1.0, dtype=tf.float32) if tf.math.is_nan(output) else output
+    def call(self, true, pred):
+        error = tf.map_fn(self._error_calc, (true, pred), dtype=tf.float32)
+        return tf.reduce_mean(error)
 
 # returns heatmap figure of magnitude and phase
 def pltSect(input, x, y, sx, sy):
@@ -247,48 +339,48 @@ def mkMtrx (nodes, js, phis, js_nh, phis_nh, g, y_0, y_ex, w, partial={}):
     
     return output
 
-def maskr(nodes, n_ring, n):
-    output = np.zeros([nodes * 2 * n_ring, nodes * 2 * n_ring], dtype = np.uint32)
-    pad = n * 2 * nodes
-    for i in range(nodes):
+# def maskr(nodes, n_ring, n):
+#     output = np.zeros([nodes * 2 * n_ring, nodes * 2 * n_ring], dtype = np.uint32)
+#     pad = n * 2 * nodes
+#     for i in range(nodes):
         
-        if n == 0:
-            output[i][nodes * 2 - 1 - i] = 1
-            output[nodes + i][nodes - i - 1] = -1
-        else:
-            output[pad - nodes * 2 + i][pad + i] = -1
-            output[pad - nodes + i][pad + nodes + i] = 1
-            # hermitian
-            output[pad + i][pad - nodes * 2 + i] = -1
-            output[pad + nodes + i][pad - nodes + i] = 1
-            # non-hermitian?
-            # output[pad + i][pad - nodes * 2 + i] = 1
-            # output[pad + nodes + i][pad - nodes + i] = -1
+#         if n == 0:
+#             output[i][nodes * 2 - 1 - i] = 1
+#             output[nodes + i][nodes - i - 1] = -1
+#         else:
+#             output[pad - nodes * 2 + i][pad + i] = -1
+#             output[pad - nodes + i][pad + nodes + i] = 1
+#             # hermitian
+#             output[pad + i][pad - nodes * 2 + i] = -1
+#             output[pad + nodes + i][pad - nodes + i] = 1
+#             # non-hermitian?
+#             # output[pad + i][pad - nodes * 2 + i] = 1
+#             # output[pad + nodes + i][pad - nodes + i] = -1
 
-        output[pad + i][pad + i] = 2
-        output[pad + nodes + i][pad + nodes + i] = -2
+#         output[pad + i][pad + i] = 2
+#         output[pad + nodes + i][pad + nodes + i] = -2
         
-        for j in [x + 1 for x in range(nodes - 1)]:
-            if i + j < nodes:
-                output[pad + i][pad + i + j] = 2 * j + 1
-                output[pad + nodes + i][pad + nodes + i + j] = -2 * j - 1
-            if i - j >= 0:
-                output[pad + i][pad + i - j] = 2 * j + 2
-                output[pad + nodes + i][pad + nodes + i - j] = -2 * j - 2
-    return output
+#         for j in [x + 1 for x in range(nodes - 1)]:
+#             if i + j < nodes:
+#                 output[pad + i][pad + i + j] = 2 * j + 1
+#                 output[pad + nodes + i][pad + nodes + i + j] = -2 * j - 1
+#             if i - j >= 0:
+#                 output[pad + i][pad + i - j] = 2 * j + 2
+#                 output[pad + nodes + i][pad + nodes + i - j] = -2 * j - 2
+#     return output
 
-def mask2(nodes, n_ring, n):
-    output = np.zeros([nodes * 2 * (n_ring + 1), nodes * 2 * (n_ring + 1)], dtype = np.uint32)
-    pad = 0 if n == n_ring else n + 1 * 2 * nodes
-    for i in range(nodes):
-        output[pad + i][pad + i] = -1
-        output[pad + nodes + i][pad + nodes + i] = 1
-        if pad > 0:
-            output[pad - nodes * 2 + i][pad + i] = -2
-            output[pad - nodes + i][pad + nodes + i] = 2
-            output[pad + i][pad - nodes * 2 + i] = -3
-            output[pad + nodes + i][pad - nodes + i] = 3
-    return output
+# def mask2(nodes, n_ring, n):
+#     output = np.zeros([nodes * 2 * (n_ring + 1), nodes * 2 * (n_ring + 1)], dtype = np.uint32)
+#     pad = 0 if n == n_ring else n + 1 * 2 * nodes
+#     for i in range(nodes):
+#         output[pad + i][pad + i] = -1
+#         output[pad + nodes + i][pad + nodes + i] = 1
+#         if pad > 0:
+#             output[pad - nodes * 2 + i][pad + i] = -2
+#             output[pad - nodes + i][pad + nodes + i] = 2
+#             output[pad + i][pad - nodes * 2 + i] = -3
+#             output[pad + nodes + i][pad - nodes + i] = 3
+#     return output
             
 # Eigenvalue calculation
 def eigenRSpace (nodes, js, phis, js_nh, phis_nh, g, y_0, y_ex):
@@ -540,28 +632,31 @@ def jsi_conv(param, filename, epochs=5):
 
     kernel = JsiKernel(nodes, padding, n_rings, length, orth_itr)
 
-    class JsiError(losses.Loss):
-        def _error_calc(self, params):
-            true, pred = params
-            # reorganize parameters
-            js = tf.cast(tf.reshape(pred[0:n_rings * length], (n_rings, length)), dtype=tf.complex64) * tf.exp(1j * tf.cast(tf.reshape(pred[n_rings * length:n_rings * length * 2], (n_rings, length)), dtype=tf.complex64))
-            jr = tf.cast(tf.reshape(pred[n_rings*length*2 : n_rings*length*2+nodes_t*2*n_rings], (n_rings, nodes_t*2)), dtype=tf.complex64)
-            g = tf.cast(pred[-1], dtype=tf.complex64)
-            y0s = tf.cast(tf.reshape(pred[n_rings*length*2+nodes_t*2*n_rings:n_rings*length*2+nodes_t*4*n_rings], (n_rings, nodes_t*2)), dtype=tf.complex64)
+    # @tf.keras.saving.register_keras_serializable()
+    # class JsiError(losses.Loss):
+    #     def _error_calc(self, params):
+    #         true, pred = params
+    #         # reorganize parameters
+    #         js = tf.cast(tf.reshape(pred[0:n_rings * length], (n_rings, length)), dtype=tf.complex64) * tf.exp(1j * tf.cast(tf.reshape(pred[n_rings * length:n_rings * length * 2], (n_rings, length)), dtype=tf.complex64))
+    #         jr = tf.cast(tf.reshape(pred[n_rings*length*2 : n_rings*length*2+nodes_t*2*n_rings], (n_rings, nodes_t*2)), dtype=tf.complex64)
+    #         g = tf.cast(pred[-1], dtype=tf.complex64)
+    #         y0s = tf.cast(tf.reshape(pred[n_rings*length*2+nodes_t*2*n_rings:n_rings*length*2+nodes_t*4*n_rings], (n_rings, nodes_t*2)), dtype=tf.complex64)
             
-            y_pred = kernel(js, jr, g, y0s)
-            has_nan = tf.math.reduce_any(tf.math.is_nan(tf.cast(y_pred, dtype=tf.float32)))
-            # if has_nan:
-            #     return tf.constant(1.0, dtype=tf.float32)
-            y_true = tf.cast(true[:, :, 0], tf.complex64)
-            return tf.cast(
-                1 - tf.abs( tf.tensordot(tf.math.conj(y_true), y_pred, axes=2) * tf.tensordot(tf.math.conj(y_pred), y_true, axes=2) )
-                           / (tf.abs((tf.tensordot(tf.math.conj(y_pred),  y_pred, axes=2)) * tf.tensordot(tf.math.conj(y_true), y_true, axes=2)))
-                , tf.float32)
-        def call(self, true, pred):
-            error = tf.map_fn(self._error_calc, (true, pred), dtype=tf.float32)
+    #         y_pred = kernel(js, jr, g, y0s)
+    #         y_pred = tf.linalg.l2_normalize(y_pred)
+    #         has_nan = tf.math.reduce_any(tf.math.is_nan(tf.cast(y_pred, dtype=tf.float32)))
+    #         if has_nan:
+    #             return tf.constant(1.0, dtype=tf.float32)
+    #         y_true = tf.cast(true[:, :, 0], tf.complex64)
+    #         output = tf.cast(
+    #             1 - tf.abs( tf.tensordot(tf.math.conj(y_true), y_pred, axes=2) * tf.tensordot(tf.math.conj(y_pred), y_true, axes=2) )
+    #                        / (tf.abs((tf.tensordot(tf.math.conj(y_pred),  y_pred, axes=2)) * tf.tensordot(tf.math.conj(y_true), y_true, axes=2)))
+    #             , tf.float32)
+    #         return tf.constant(1.0, dtype=tf.float32) if tf.math.is_nan(output) else output
+    #     def call(self, true, pred):
+    #         error = tf.map_fn(self._error_calc, (true, pred), dtype=tf.float32)
 
-            return tf.reduce_mean(error)
+    #         return tf.reduce_mean(error)
     
     def create_cnn_model():
         model = models.Sequential()
@@ -572,6 +667,9 @@ def jsi_conv(param, filename, epochs=5):
         model.add(layers.Conv2D(32, (3, 3), padding='valid', activation='relu', input_shape=(28, 28, 1)))
         model.add(layers.Flatten())
         model.add(layers.Dense(num_param, activation='softmax'))
+        model.add(layers.Dense(num_param, activation='relu'))
+        model.add(layers.Dense(num_param, activation='relu'))
+        model.add(layers.Dense(num_param, activation='relu'))
         model.add(layers.Dense(num_param, activation='relu'))
         model.add(layers.Dense(num_param))
         return model
@@ -589,16 +687,38 @@ def jsi_conv(param, filename, epochs=5):
         parsed['data'] = tf.reshape(parsed['data'], (nodes, nodes, 1))
         
         return parsed['data'], parsed['data']
-        
-    # Create a dataset from the TFRecord file
-    dataset = tf.data.TFRecordDataset(filenames=filename)
-    dataset = dataset.map(_parse_function)
+
+    dataset = None
+    if filename == 'mnist':
+        (train_images, _), (_, _) = mnist.load_data()
+        train_images = train_images.reshape((60000, 28, 28, 1)).astype('float32') / 255
+        dataset = tf.data.Dataset.from_tensor_slices((train_images, train_images))
+    else:
+        # Create a dataset from the TFRecord file
+        dataset = tf.data.TFRecordDataset(filenames=filename)
+    
+        dataset = dataset.map(_parse_function)
 
     # Shuffle, batch, and prefetch the dataset
-    dataset = dataset.shuffle(10000).batch(32).prefetch(tf.data.experimental.AUTOTUNE)
+    dataset = dataset.shuffle(1024).batch(16).prefetch(tf.data.experimental.AUTOTUNE)
 
-    model = create_cnn_model()
-    model.compile(optimizer='adam',
-              loss=JsiError())
-    model.fit(dataset, epochs=epochs)
+    optimizer = tf.keras.optimizers.Adam(1e-6)
+    
+    model = param.get('model')
+    if not 'model' in param or model is None:
+        model = create_cnn_model()
+        model.compile(optimizer=optimizer,
+                  loss=JsiError(kernel))
+
+    if isinstance(model, str):
+        model = models.load_model(model)
+        
+    model_checkpoint_callback = tf.keras.callbacks.ModelCheckpoint(
+        filepath='./nn_chkpt',
+        monitor='loss',
+        mode='min',
+        save_best_only=True
+    )
+
+    model.fit(dataset, epochs=epochs, callbacks=[model_checkpoint_callback])
     return model
