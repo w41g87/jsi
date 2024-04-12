@@ -659,26 +659,31 @@ def jsi_conv(param, filename, epochs=5):
     #         return tf.reduce_mean(error)
     
     def create_cnn_model():
-        model = models.Sequential()
-        model.add(layers.Conv2D(32, (11, 11), padding='same', activation='relu', input_shape=(28, 28, 1)))
-        model.add(layers.Conv2D(32, (5, 5), padding='same', activation='relu', input_shape=(28, 28, 1)))
-        model.add(layers.Conv2D(32, (3, 3), padding='same', activation='relu', input_shape=(28, 28, 1)))
-        model.add(layers.Conv2D(32, (3, 3), padding='same', activation='relu', input_shape=(28, 28, 1)))
-        model.add(layers.Conv2D(32, (3, 3), padding='valid', activation='relu', input_shape=(28, 28, 1)))
-        model.add(layers.Flatten())
-        model.add(layers.Dense(num_param, activation='softmax'))
-        model.add(layers.Dense(num_param, activation='relu'))
-        model.add(layers.Dense(num_param, activation='relu'))
-        model.add(layers.Dense(num_param, activation='relu'))
-        model.add(layers.Dense(num_param, activation='relu'))
-        model.add(layers.Dense(num_param))
+        model = models.Sequential([
+            layers.Conv2D(32, (11, 11), padding='same', activation='relu', input_shape=(28, 28, 1)),
+            layers.BatchNormalization(),
+            layers.Conv2D(32, (5, 5), padding='same', activation='relu', input_shape=(28, 28, 1)),
+            layers.BatchNormalization(),
+            layers.Conv2D(32, (3, 3), padding='same', activation='relu', input_shape=(28, 28, 1)),
+            layers.BatchNormalization(),
+            layers.Conv2D(32, (3, 3), padding='same', activation='relu', input_shape=(28, 28, 1)),
+            layers.BatchNormalization(),
+            layers.Conv2D(32, (3, 3), padding='same', activation='relu', input_shape=(28, 28, 1)),
+            layers.Flatten(),
+            layers.Dense(4096, activation='softmax'),
+            layers.Dense(4096, activation='relu'),
+            layers.Dense(2048, activation='relu'),
+            layers.Dense(1024, activation='relu'),
+            layers.Dense(num_param, activation='relu'),
+            layers.Dense(num_param)
+        ])
         return model
         
     def _parse_function(proto):
         # Define features
         features = {
             'data': tf.io.FixedLenFeature([nodes * nodes], tf.float32),
-            'label': tf.io.FixedLenFeature([num_param], tf.float32)
+            'label': tf.io.VarLenFeature(tf.float32)
         }
         # Load one example
         parsed = tf.io.parse_single_example(proto, features)
@@ -702,7 +707,7 @@ def jsi_conv(param, filename, epochs=5):
     # Shuffle, batch, and prefetch the dataset
     dataset = dataset.shuffle(1024).batch(16).prefetch(tf.data.experimental.AUTOTUNE)
 
-    optimizer = tf.keras.optimizers.Adam(1e-6)
+    optimizer = tf.keras.optimizers.Adam(1e-4)
     
     model = param.get('model')
     if not 'model' in param or model is None:

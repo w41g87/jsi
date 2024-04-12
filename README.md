@@ -26,6 +26,9 @@ To enable interactive matplotlib figures, install [ipympl](https://matplotlib.or
 
 # Change Log
 
+## v 4.2.1
+- Expanded the complexity of the trained model
+
 ## v 4.2.0
 - Custom loss class
 - jsi calculation kernel object
